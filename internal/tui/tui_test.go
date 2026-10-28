@@ -118,6 +118,31 @@ func TestComposerPinnedAtBottom(t *testing.T) {
 	}
 }
 
+func TestAttachmentClickMapping(t *testing.T) {
+	m := testModel()
+	m.mode = modeChat
+	m.conv = "id-zhangsan"
+	m.width, m.height = 100, 24
+	m.messages = []*store.ChatMessage{
+		{ID: "1", Conv: m.conv, FromName: "张三", Text: "先看这个"},
+		{ID: "2", Conv: m.conv, FromName: "张三", Attachment: &store.Attachment{Name: "cat.png", LocalPath: "/tmp/cat.png"}},
+		{ID: "3", Conv: m.conv, FromName: "张三", Text: "看完回复我"},
+	}
+	if cm := m.messageAtRow(0); cm != nil {
+		t.Fatal("header row must not map to a message")
+	}
+	if cm := m.messageAtRow(1); cm == nil || cm.Text != "先看这个" {
+		t.Fatalf("row 1 = %+v, want first message", cm)
+	}
+	cm := m.messageAtRow(2)
+	if cm == nil || cm.Attachment == nil || cm.Attachment.LocalPath != "/tmp/cat.png" {
+		t.Fatalf("row 2 = %+v, want the attachment message", cm)
+	}
+	if cm := m.messageAtRow(99); cm != nil {
+		t.Fatal("row beyond history must not map to a message")
+	}
+}
+
 func TestMentionQueryAndFuzzyFilter(t *testing.T) {
 	if q, ok := mentionQuery("看看这个 @rep"); !ok || q != "rep" {
 		t.Fatalf("mentionQuery = %q,%v; want rep,true", q, ok)

@@ -404,10 +404,56 @@ func (m *model) handleEvent(ev ipc.Event) tea.Cmd {
 	return nil
 }
 
+// visibleMessages is the tail of history actually rendered.
+func (m *model) visibleMessages() []*store.ChatMessage {
+	limit := max(1, m.mainHeight()-1)
+	if len(m.messages) <= limit {
+		return m.messages
+	}
+	return m.messages[len(m.messages)-limit:]
+}
+
+// messageAtRow maps a terminal row in the chat pane to a message.
+func (m *model) messageAtRow(y int) *store.ChatMessage {
+	vis := m.visibleMessages()
+	idx := y - 1 // row 0 is the chat header
+	if idx < 0 || idx >= len(vis) {
+		return nil
+	}
+	return vis[idx]
+}
+
+// openAttachment opens a file with the system default app, or
+// reveals it in the file manager when reveal is true.
+func openAttachment(path string, reveal bool) tea.Cmd {
+	return func() tea.Msg {
+		target := path
+		what := "已用系统程序打开: "
+		if reveal {
+			target = filepath.Dir(path)
+			what = "已在文件管理器打开所在文件夹: "
+		}
+		cmd := exec.Command("xdg-open", target)
+		if err := cmd.Start(); err != nil {
+			return noticeMsg{text: "打开失败: " + err.Error()}
+		}
+		return noticeMsg{text: what + filepath.Base(path)}
+	}
+}
+
 // handleMouse: clicking a roster row selects it; clicking the
 // selected row (or any row while chatting) opens that chat.
+// Clicking an attachment row in the chat opens it; Ctrl+click
+// reveals it in the file manager.
 func (m *model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if msg.Type != tea.MouseLeft {
+		return m, nil
+	}
+	if m.mode == modeChat && msg.X >= 26 && msg.Y >= 1 && msg.Y < m.mainHeight() {
+		if cm := m.messageAtRow(msg.Y); cm != nil && cm.Attachment != nil && cm.Attachment.LocalPath != "" {
+			reveal := msg.Ctrl || msg.Alt // Ctrl (or Alt) + click reveals in the file manager
+			return m, openAttachment(cm.Attachment.LocalPath, reveal)
+		}
 		return m, nil
 	}
 	row := msg.Y - 1 // row 0 is the roster title
@@ -738,9 +784,9 @@ var (
 )
 
 func (m *model) View() string {
-	w, h := m.width, m.height
+	w := m.width
 	if w == 0 {
-		w, h = 100, 30
+		w = 100
 	}
 	leftW := 26
 	rightW := max(30, w-leftW-3)
@@ -787,11 +833,7 @@ func (m *model) View() string {
 	if m.mode == modeChat && m.completing && len(m.suggest) > 0 {
 		suggestLines = len(m.suggest)
 	}
-	footerLines := 3 // separator + hint + status (picker)
-	if m.mode == modeChat {
-		footerLines = 4 + suggestLines // separator + 发给 + input + status + popup
-	}
-	mainH := max(5, h-footerLines)
+	mainH := m.mainHeight()
 
 	right := m.viewRight(rightW, mainH)
 
@@ -829,6 +871,23 @@ func (m *model) View() string {
 		footer.WriteString(dimStyle.Render("在左侧选一位同事，按 Enter 开始聊天") + "\n")
 	}
 	return body + "\n" + footer.String() + dimStyle.Render(status)
+}
+
+// mainHeight is the fixed history-pane height for this frame.
+func (m *model) mainHeight() int {
+	h := m.height
+	if h == 0 {
+		h = 30
+	}
+	suggestLines := 0
+	if m.mode == modeChat && m.completing && len(m.suggest) > 0 {
+		suggestLines = len(m.suggest)
+	}
+	footerLines := 3
+	if m.mode == modeChat {
+		footerLines = 4 + suggestLines
+	}
+	return max(5, h-footerLines)
 }
 
 // shortenHome renders ~ for the home directory in picker rows.
@@ -925,6 +984,9 @@ func (m *model) messageLines(limit int) string {
 		if cm.Attachment != nil {
 			a := cm.Attachment
 			line := fmt.Sprintf("%s %s %s [%s %s]", ts, who, fileStyle.Render("文件"), a.Name, humanSize(a.Size))
+			if a.LocalPath != "" {
+				line += dimStyle.Render(" ↗点击打开·Ctrl+定位")
+			}
 			if cm.Status == "failed" {
 				line += errStyle.Render(" 发送失败")
 			}
