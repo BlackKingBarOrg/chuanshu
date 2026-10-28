@@ -1,0 +1,12 @@
+[Unit]
+Description=Chuanshu LAN chat and file transfer daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/chuanshu daemon
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
