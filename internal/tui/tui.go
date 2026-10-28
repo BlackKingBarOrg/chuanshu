@@ -408,16 +408,25 @@ func (m *model) handleEvent(ev ipc.Event) tea.Cmd {
 // visibleMessages is the tail of history actually rendered.
 func (m *model) visibleMessages() []*store.ChatMessage {
 	limit := max(1, m.mainHeight()-1)
+	if m.mode == modePick {
+		limit = max(1, m.mainHeight()-7)
+	}
 	if len(m.messages) <= limit {
 		return m.messages
 	}
 	return m.messages[len(m.messages)-limit:]
 }
 
-// messageAtRow maps a terminal row in the chat pane to a message.
+// messageAtRow maps a terminal row in the right pane to a
+// message, in both chat mode (messages start under the header)
+// and picker mode (preview under the peer card).
 func (m *model) messageAtRow(y int) *store.ChatMessage {
+	offset := 1 // chat: row 0 is the chat header
+	if m.mode == modePick {
+		offset = 6 // card: name, state, blank, Enter, blank, 最近消息:
+	}
 	vis := m.visibleMessages()
-	idx := y - 1 // row 0 is the chat header
+	idx := y - offset
 	if idx < 0 || idx >= len(vis) {
 		return nil
 	}
@@ -464,7 +473,7 @@ func (m *model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	// reads as clickable before the user commits to a click.
 	if msg.Action == tea.MouseActionMotion || msg.Type == tea.MouseMotion {
 		m.hoverKey = ""
-		if m.mode == modeChat && msg.X >= 26 && msg.Y >= 1 && msg.Y < m.mainHeight() {
+		if msg.X >= 26 && msg.Y >= 1 && msg.Y < m.mainHeight() {
 			if cm := m.messageAtRow(msg.Y); cm != nil && cm.Attachment != nil && cm.Attachment.LocalPath != "" {
 				m.hoverKey = cm.Attachment.TransferID
 				if m.hoverKey == "" {
@@ -477,9 +486,13 @@ func (m *model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if msg.Type != tea.MouseLeft && msg.Type != tea.MouseRight {
 		return m, nil
 	}
-	if m.mode == modeChat && msg.X >= 26 && msg.Y >= 1 && msg.Y < m.mainHeight() {
+	if msg.X >= 26 && msg.Y >= 1 && msg.Y < m.mainHeight() {
 		if cm := m.messageAtRow(msg.Y); cm != nil && cm.Attachment != nil && cm.Attachment.LocalPath != "" {
 			return m, openAttachment(cm.Attachment.LocalPath, clickReveal(msg))
+		}
+		if m.mode == modePick {
+			// Clicking elsewhere in the preview enters the chat.
+			return m, m.enterChat()
 		}
 		return m, nil
 	}

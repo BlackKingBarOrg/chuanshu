@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -170,6 +171,59 @@ func TestAttachmentHoverHighlight(t *testing.T) {
 	m = updated.(*model)
 	if m.hoverKey != "" {
 		t.Fatalf("hoverKey = %q, want cleared over roster", m.hoverKey)
+	}
+}
+
+// A click on an attachment row must actually invoke the system
+// opener with the file path. Uses a stub xdg-open on PATH that
+// records its argument, so no real app is launched.
+func TestAttachmentClickInvokesOpener(t *testing.T) {
+	stubDir := t.TempDir()
+	record := stubDir + "/opened.txt"
+	stub := "#!/bin/sh\necho \"$1\" >> \"" + record + "\"\n"
+	if err := os.WriteFile(stubDir+"/xdg-open", []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", stubDir)
+
+	m := testModel()
+	m.mode = modeChat
+	m.conv = "id-zhangsan"
+	m.width, m.height = 100, 24
+	m.messages = []*store.ChatMessage{
+		{ID: "1", Conv: m.conv, FromName: "张三", Text: "看图"},
+		{ID: "2", Conv: m.conv, FromName: "张三", Attachment: &store.Attachment{TransferID: "tx1", Name: "cat.png", LocalPath: "/tmp/cat.png"}},
+	}
+	for _, click := range []tea.MouseMsg{
+		{Type: tea.MouseLeft, X: 40, Y: 2},
+		{Type: tea.MouseLeft, Ctrl: true, X: 40, Y: 2},
+	} {
+		_, cmd := m.Update(click)
+		if cmd == nil {
+			t.Fatalf("click %+v produced no command", click)
+		}
+		if msg := cmd(); msg == nil {
+			t.Fatal("opener command returned nil")
+		}
+	}
+	// The opener is started asynchronously; wait for both
+	// invocations to land in the record file.
+	var raw []byte
+	var err error
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		raw, err = os.ReadFile(record)
+		if err == nil && len(strings.Split(strings.TrimSpace(string(raw)), "\n")) == 2 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("stub xdg-open was never invoked: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	if len(lines) != 2 || lines[0] != "/tmp/cat.png" || lines[1] != "/tmp/cat.png" {
+		t.Fatalf("opener invoked with %q, want /tmp/cat.png twice (plain + Ctrl)", lines)
 	}
 }
 
