@@ -438,6 +438,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sentMsg:
 		if msg.err != nil {
 			m.status = "发送失败: " + msg.err.Error()
+		} else if msg.cm != nil && msg.cm.Status == "queued" {
+			m.status = m.peerName(m.conv) + " 不在线，消息已排队，待对方上线自动重发"
 		} else {
 			m.status = "已发送给 " + m.peerName(m.conv)
 		}
@@ -1194,7 +1196,9 @@ func (m *model) messageLines(limit int) string {
 		line := fmt.Sprintf("%s %s  %s", ts, who, cm.Text)
 		switch cm.Status {
 		case "failed":
-			line += errStyle.Render(" ✗ 对方不在线")
+			line += errStyle.Render(" ✗ 发送失败")
+		case "queued":
+			line += warnStyle.Render(" ⏳ 待重发（对方上线自动发）")
 		case "delivered":
 			line += dimStyle.Render(" ✓")
 		case "read":

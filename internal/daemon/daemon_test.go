@@ -65,7 +65,11 @@ type testDaemon struct {
 
 func startDaemon(t *testing.T, nickname string) *testDaemon {
 	t.Helper()
-	root := t.TempDir()
+	return startDaemonAt(t, t.TempDir(), nickname, freePort(t), freePort(t))
+}
+
+func startDaemonAt(t *testing.T, root, nickname string, tcpPort, udpPort int) *testDaemon {
+	t.Helper()
 	paths := appcfg.Paths{
 		ConfigDir:   root,
 		DataDir:     root,
@@ -75,7 +79,7 @@ func startDaemon(t *testing.T, nickname string) *testDaemon {
 	if err := paths.Ensure(); err != nil {
 		t.Fatal(err)
 	}
-	cfg := appcfg.Config{Nickname: nickname, TCPPort: freePort(t), DiscoveryUDPPort: freePort(t)}
+	cfg := appcfg.Config{Nickname: nickname, TCPPort: tcpPort, DiscoveryUDPPort: udpPort}
 	d, err := New(cfg, paths)
 	if err != nil {
 		t.Fatal(err)
@@ -150,6 +154,65 @@ func TestUnreadSummaryAndFocus(t *testing.T) {
 	// Stop both daemons before TempDir cleanup races their writes.
 	alice.cancel()
 	bob.cancel()
+	time.Sleep(150 * time.Millisecond)
+}
+
+func TestOfflineMessageResentWhenPeerReturns(t *testing.T) {
+	t.Setenv("CHUANSHU_DISABLE_MDNS", "1")
+	alice := startDaemon(t, "Alice")
+	bobRoot := t.TempDir()
+	bobTCP, bobUDP := freePort(t), freePort(t)
+	bob := startDaemonAt(t, bobRoot, "Bob", bobTCP, bobUDP)
+	bobID := bob.d.ID.MyPeerID()
+
+	if _, err := alice.d.AddManualPeer(fmt.Sprintf("127.0.0.1:%d", bobTCP)); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "alice knows bob", func() bool {
+		_, ok := alice.d.Store.Resolve("Bob")
+		return ok
+	})
+
+	// Bob goes offline; Alice's message must queue, not fail.
+	bob.cancel()
+	waitFor(t, "alice drops bob", func() bool {
+		_, ok := alice.d.connFor(bobID)
+		return !ok
+	})
+	time.Sleep(100 * time.Millisecond)
+	cm, err := alice.d.SendText("Bob", "你回来后能看到这条")
+	if err != nil {
+		t.Fatalf("offline send: %v", err)
+	}
+	if cm.Status != "queued" {
+		t.Fatalf("status = %q, want queued", cm.Status)
+	}
+
+	// Bob returns with the same identity and port: the queued
+	// message must arrive automatically, exactly once.
+	bob2 := startDaemonAt(t, bobRoot, "Bob", bobTCP, bobUDP)
+	if bob2.d.ID.MyPeerID() != bobID {
+		t.Fatal("restarted bob changed identity")
+	}
+	waitFor(t, "bob receives queued message after return", func() bool {
+		n := 0
+		for _, m := range bob2.d.Store.Messages(alice.d.ID.MyPeerID()) {
+			if !m.Mine && m.Text == "你回来后能看到这条" {
+				n++
+			}
+		}
+		return n == 1
+	})
+	waitFor(t, "alice sees delivered", func() bool {
+		for _, m := range alice.d.Store.Messages(bobID) {
+			if m.ID == cm.ID && m.Status == "delivered" {
+				return true
+			}
+		}
+		return false
+	})
+	alice.cancel()
+	bob2.cancel()
 	time.Sleep(150 * time.Millisecond)
 }
 
@@ -273,18 +336,22 @@ func TestTwoDaemonsChatAndFile(t *testing.T) {
 	}
 	_ = store.BroadcastConv
 
-	// Offline failure: a peer that was online and then shut down
-	// must fail fast, not queue.
+	// Offline queueing: a known peer that shut down gets the
+	// message queued (not failed); it flushes when he returns.
 	bob.cancel()
 	waitFor(t, "alice drops bob connection", func() bool {
 		_, ok := alice.d.connFor(bobID)
 		return !ok
 	})
-	if _, err := alice.d.SendText("Bob", "还在吗"); err == nil {
-		t.Fatal("send to shut-down peer succeeded, want offline failure")
+	cm2, err := alice.d.SendText("Bob", "还在吗")
+	if err != nil {
+		t.Fatalf("send to offline known peer: %v", err)
+	}
+	if cm2.Status != "queued" {
+		t.Fatalf("offline message status = %q, want queued", cm2.Status)
 	}
 
-	// Offline failure: unknown peer fails immediately.
+	// Unknown peer still fails immediately (nobody to queue for).
 	if _, err := alice.d.SendText("不存在的同事", "hi"); err == nil {
 		t.Fatal("send to unknown peer succeeded, want failure")
 	}

@@ -138,9 +138,16 @@ func run(args []string) error {
 			return fmt.Errorf("用法: chuanshu send <同事> <消息...>")
 		}
 		raw, err := client.RawCall("send_text", map[string]any{"peer": args[1], "text": strings.Join(args[2:], " ")})
-		_ = raw
 		if err != nil {
 			return err
+		}
+		var cm store.ChatMessage
+		if len(raw) > 0 {
+			_ = json.Unmarshal(raw, &cm)
+		}
+		if cm.Status == "queued" {
+			fmt.Println("对方不在线，消息已排队，待对方上线自动重发")
+			return nil
 		}
 		fmt.Println("已送达")
 		return nil
@@ -438,7 +445,7 @@ func usage() {
   chuanshu daemon           前台运行守护进程（供 systemd 调用）
   chuanshu peers            列出同事与在线状态
   chuanshu peer-add <ip:端口>  手动连接（广播被屏蔽时）
-  chuanshu send <同事> <消息...>  发消息（对方不在线立即失败）
+  chuanshu send <同事> <消息...>  发消息（对方不在线自动排队，上线补发）
   chuanshu file <同事> <路径>    发文件或文件夹
   chuanshu shot <同事>      框选截图并发送
   chuanshu offers           待确认接收的文件

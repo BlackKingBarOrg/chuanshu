@@ -198,6 +198,50 @@ func (s *Store) Resolve(query string) (*PeerRecord, bool) {
 	return match, match != nil
 }
 
+// HasMessage reports whether a message id is already stored
+// (dedupes resends whose delivery ack was lost).
+func (s *Store) HasMessage(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, m := range s.messages {
+		if m.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// QueuedFor returns my queued (offline, awaiting resend) messages
+// to one peer in send order.
+func (s *Store) QueuedFor(peerID string) []*ChatMessage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []*ChatMessage
+	for _, m := range s.messages {
+		if m.Mine && m.Conv == peerID && m.Status == "queued" {
+			cp := *m
+			out = append(out, &cp)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].TS.Before(out[j].TS) })
+	return out
+}
+
+// QueuedPeers lists peers that have anything queued.
+func (s *Store) QueuedPeers() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	seen := map[string]bool{}
+	var out []string
+	for _, m := range s.messages {
+		if m.Mine && m.Status == "queued" && !seen[m.Conv] {
+			seen[m.Conv] = true
+			out = append(out, m.Conv)
+		}
+	}
+	return out
+}
+
 // AddMessage appends a message and persists.
 func (s *Store) AddMessage(m *ChatMessage) error {
 	s.mu.Lock()

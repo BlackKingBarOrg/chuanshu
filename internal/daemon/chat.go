@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
 	"strings"
@@ -79,6 +80,12 @@ func (d *Daemon) handleHello(pc *peerConn, msg *wire.Message) {
 }
 
 func (d *Daemon) handleChat(pc *peerConn, msg *wire.Message) {
+	// Resends are expected (an ack can be lost after we stored
+	// the message): ack again, never store twice.
+	if d.Store.HasMessage(msg.ID) {
+		_ = pc.sess.SendMessage(wire.Message{Type: wire.TypeAckDelivered, ID: msg.ID})
+		return
+	}
 	conv := pc.peerID
 	if msg.Broadcast {
 		conv = store.BroadcastConv
@@ -181,9 +188,12 @@ func (d *Daemon) sendTextTo(peer *store.PeerRecord, text string, broadcast bool,
 	pc, err := d.ensureConn(peer.PeerID)
 	if err != nil {
 		if !broadcast {
-			_ = d.Store.UpdateStatus(cm.ID, "failed")
-			cm.Status = "failed"
+			// Offline is not failure any more: the message waits
+			// in the outbox and is resent when the peer reappears.
+			_ = d.Store.UpdateStatus(cm.ID, "queued")
+			cm.Status = "queued"
 			d.emit(Event{Kind: "message", Data: cm})
+			return cm, nil
 		}
 		return cm, err
 	}
@@ -222,6 +232,79 @@ func (d *Daemon) sendTextTo(peer *store.PeerRecord, text string, broadcast bool,
 			d.emit(Event{Kind: "message", Data: cm})
 		}
 		return cm, nil
+	}
+}
+
+// queueFlushLoop periodically tries to deliver queued messages
+// to peers that have come back online.
+func (d *Daemon) queueFlushLoop(ctx context.Context) {
+	t := time.NewTicker(5 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			for _, peerID := range d.Store.QueuedPeers() {
+				d.tryFlush(peerID)
+			}
+		}
+	}
+}
+
+// tryFlush delivers one peer's queued messages in order. It is
+// safe to call often; a per-peer guard prevents overlap, and the
+// receiver dedupes by message id if an ack was ever lost.
+func (d *Daemon) tryFlush(peerID string) {
+	d.mu.Lock()
+	if d.flushing[peerID] {
+		d.mu.Unlock()
+		return
+	}
+	d.flushing[peerID] = true
+	d.mu.Unlock()
+	defer func() {
+		d.mu.Lock()
+		delete(d.flushing, peerID)
+		d.mu.Unlock()
+	}()
+
+	queued := d.Store.QueuedFor(peerID)
+	if len(queued) == 0 {
+		return
+	}
+	pc, err := d.ensureConn(peerID)
+	if err != nil {
+		return // still offline; next tick retries
+	}
+	for _, cm := range queued {
+		ackCh := make(chan string, 2)
+		d.mu.Lock()
+		d.pendingAck[cm.ID] = ackCh
+		d.mu.Unlock()
+		err := pc.sess.SendMessage(wire.Message{
+			Type: wire.TypeChat, ID: cm.ID, TS: cm.TS, Text: cm.Text, Broadcast: cm.Broadcast,
+		})
+		if err != nil {
+			d.mu.Lock()
+			delete(d.pendingAck, cm.ID)
+			d.mu.Unlock()
+			return
+		}
+		select {
+		case status := <-ackCh:
+			_ = d.Store.UpdateStatus(cm.ID, status)
+			cm.Status = status
+			d.emit(Event{Kind: "message", Data: cm})
+		case <-time.After(5 * time.Second):
+			d.mu.Lock()
+			delete(d.pendingAck, cm.ID)
+			d.mu.Unlock()
+			return // no ack; stays queued, resend is deduped
+		}
+		d.mu.Lock()
+		delete(d.pendingAck, cm.ID)
+		d.mu.Unlock()
 	}
 }
 

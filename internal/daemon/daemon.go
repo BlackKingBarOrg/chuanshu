@@ -53,6 +53,7 @@ type Daemon struct {
 	incoming       map[string]*incomingTransfer
 	acceptedGroups map[string]bool
 	windowAddr     string
+	flushing       map[string]bool
 	subs           map[chan Event]struct{}
 	listener       net.Listener
 	startedAt      time.Time
@@ -83,6 +84,7 @@ func New(cfg appcfg.Config, paths appcfg.Paths) (*Daemon, error) {
 		incomingOffers: map[string]*incomingOffer{},
 		incoming:       map[string]*incomingTransfer{},
 		acceptedGroups: map[string]bool{},
+		flushing:       map[string]bool{},
 		subs:           map[chan Event]struct{}{},
 		startedAt:      time.Now(),
 	}, nil
@@ -121,6 +123,7 @@ func (d *Daemon) Start(ctx context.Context) error {
 	go d.acceptLoop(ctx)
 	go d.discoverLoop(ctx)
 	go d.presenceLoop(ctx)
+	go d.queueFlushLoop(ctx)
 	if err := d.serveIPC(ctx); err != nil {
 		return err
 	}
@@ -196,6 +199,10 @@ func (d *Daemon) registerConn(sess *wire.Session, outbound bool) *peerConn {
 	}
 	_ = sess.SendMessage(hello)
 	go d.readLoop(pc)
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		d.tryFlush(peerID)
+	}()
 	d.emit(Event{Kind: "peers", Data: d.Peers()})
 	return pc
 }
