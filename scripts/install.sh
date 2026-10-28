@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."
 GO="$(command -v go || true)"
 if [ -z "$GO" ] && command -v mise >/dev/null 2>&1; then
   mise install go@latest >/dev/null 2>&1 || true
-  GO="mise x go -- go"
+  GO="mise x go@latest -- go"
 fi
 if [ -z "$GO" ]; then
   echo "需要先安装 Go: sudo pacman -S go" >&2
