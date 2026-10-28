@@ -19,6 +19,11 @@ import (
 	"chuanshu/internal/wire"
 )
 
+// BuildInfo is stamped by main so clients can tell which build
+// the running daemon process actually is (a replaced binary does
+// not change an already-running process).
+var BuildInfo = "dev"
+
 // Event is pushed to subscribed IPC clients.
 type Event struct {
 	Kind string `json:"kind"`
@@ -90,6 +95,7 @@ func (d *Daemon) Me() map[string]any {
 		"code":        d.ID.MyCode(),
 		"fingerprint": identity.Fingerprint(d.ID.NoisePublicBytes()),
 		"tcp_port":    d.Cfg.TCPPort,
+		"build":       BuildInfo,
 	}
 }
 

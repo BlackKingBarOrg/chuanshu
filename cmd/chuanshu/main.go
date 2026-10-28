@@ -24,6 +24,9 @@ import (
 
 var version = "0.1.0"
 
+// commit is stamped at build time via -ldflags "-X main.commit=...".
+var commit = "dev"
+
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "chuanshu:", err)
@@ -32,6 +35,7 @@ func main() {
 }
 
 func run(args []string) error {
+	daemon.BuildInfo = commit
 	paths, err := appcfg.ResolvePaths()
 	if err != nil {
 		return err
@@ -55,7 +59,16 @@ func run(args []string) error {
 	case "tui":
 		return tui.Run(paths)
 	case "version", "--version", "-v":
-		fmt.Println("chuanshu", version)
+		fmt.Printf("chuanshu %s (commit %s)\n", version, commit)
+		// Also report the running daemon's build: replacing the
+		// binary does not upgrade an already-running process.
+		client := ipc.Client{Paths: paths}
+		var me map[string]any
+		if err := client.Call("me", nil, &me); err == nil {
+			fmt.Printf("daemon build: %v (若与上面不一致，重启守护进程)\n", me["build"])
+		} else {
+			fmt.Println("daemon: 未运行（打开 chuanshu 时会自动启动）")
+		}
 		return nil
 	case "id":
 		id, err := identity.LoadOrCreate(paths.DataDir)

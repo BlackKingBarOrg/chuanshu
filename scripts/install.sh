@@ -15,7 +15,8 @@ if [ -z "$GO" ]; then
 fi
 
 mkdir -p "$HOME/.local/bin" "$HOME/.config/systemd/user"
-$GO build -o "$HOME/.local/bin/chuanshu" ./cmd/chuanshu
+COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo dev)"
+$GO build -ldflags "-X main.commit=$COMMIT" -o "$HOME/.local/bin/chuanshu" ./cmd/chuanshu
 cp packaging/chuanshu.service "$HOME/.config/systemd/user/chuanshu.service"
 systemctl --user daemon-reload
 systemctl --user enable --now chuanshu.service
