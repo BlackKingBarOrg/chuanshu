@@ -114,7 +114,8 @@ chuanshu id                             # 本机身份信息
 ## 开发
 
 ```sh
-make build   # 产出 ./chuanshu
+make run     # 一条命令：编译并直接打开 TUI（守护进程会自动在后台启动）
+make build   # 只编译，产出 ./chuanshu
 make test    # 单元 + 双守护进程集成测试
 make vet
 ```
@@ -135,6 +136,8 @@ make vet
 设计背景、取舍与分步方案见 [设计文档](.agents/plans/2026-10-27-chuanshu-design.md)。
 
 本地双开自测：两个终端分别用 `CHUANSHU_HOME=/tmp/a` 与 `CHUANSHU_HOME=/tmp/b` 运行，再用 `chuanshu peer-add 127.0.0.1:<对方端口>` 互连即可（注意本机 WiFi 可能不环回广播，同机自测请走手动连接）。
+
+如果 Go 是用 mise 装的（不在 PATH 里），把 `GO` 指过去即可：`make run GO="mise x go -- go"`。已经安装到系统的版本日常使用直接运行 `chuanshu`，不需要编译。
 
 ## 路线图
 
