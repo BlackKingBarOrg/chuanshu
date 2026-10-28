@@ -1,7 +1,10 @@
 package tui
 
 import (
+	"fmt"
+	"strings"
 	"testing"
+	"time"
 
 	"chuanshu/internal/store"
 
@@ -69,6 +72,73 @@ func TestPickerSearchAndEnter(t *testing.T) {
 	}
 	if m.selConv() != "id-zhangsan" {
 		t.Fatalf("picker highlight = %q, want back on id-zhangsan", m.selConv())
+	}
+}
+
+// The composer must stay pinned: however long the history gets,
+// the rendered frame keeps the same line count and the input sits
+// on the same row.
+func TestComposerPinnedAtBottom(t *testing.T) {
+	m := testModel()
+	m.mode = modeChat
+	m.conv = "id-zhangsan"
+	m.width, m.height = 100, 24
+	m.input.Width = 60
+	m.input.Placeholder = "输入消息，/file 加附件，Enter 发送"
+	m.input.Focus()
+
+	inputRow := func(view string) int {
+		lines := strings.Split(view, "\n")
+		if len(lines) != 24 {
+			t.Fatalf("frame has %d lines, want exactly terminal height 24", len(lines))
+		}
+		for i, l := range lines {
+			if strings.Contains(l, "入消息") { // placeholder, first rune styled apart
+				return i
+			}
+		}
+		t.Fatal("composer not found in frame")
+		return -1
+	}
+
+	rowEmpty := inputRow(m.View())
+	for i := 0; i < 200; i++ {
+		m.messages = append(m.messages, &store.ChatMessage{
+			ID: fmt.Sprint(i), Conv: m.conv, FromName: "张三",
+			Text: fmt.Sprintf("第 %d 条消息", i), TS: time.Now(),
+		})
+	}
+	rowLong := inputRow(m.View())
+	if rowEmpty != rowLong {
+		t.Fatalf("composer moved: row %d with empty history, row %d with 200 messages", rowEmpty, rowLong)
+	}
+	// Only the tail of the history is shown.
+	if !strings.Contains(m.View(), "第 199 条消息") || strings.Contains(m.View(), "第 0 条消息") {
+		t.Fatal("history should show the latest messages only")
+	}
+}
+
+func TestMentionQueryAndFuzzyFilter(t *testing.T) {
+	if q, ok := mentionQuery("看看这个 @rep"); !ok || q != "rep" {
+		t.Fatalf("mentionQuery = %q,%v; want rep,true", q, ok)
+	}
+	if _, ok := mentionQuery("邮箱 a@b.com 里提到的"); ok {
+		t.Fatal("@ inside a word must not open the file picker")
+	}
+	if _, ok := mentionQuery("没有提及"); ok {
+		t.Fatal("no @ must not open the file picker")
+	}
+	index := []string{"/home/u/Downloads/report-2026.pdf", "/home/u/Documents/notes.txt", "/home/u/Pictures/cat.png"}
+	got := filterFiles(index, "rep", 8)
+	if len(got) == 0 || got[0] != index[0] {
+		t.Fatalf("filterFiles(rep) should rank the basename match first, got %v", got)
+	}
+	got = filterFiles(index, "ctpng", 8) // subsequence fuzzy match
+	if len(got) != 1 || got[0] != index[2] {
+		t.Fatalf("filterFiles(ctpng) = %v", got)
+	}
+	if stripped := stripMention("发你 @rep"); stripped != "发你" {
+		t.Fatalf("stripMention = %q, want 发你", stripped)
 	}
 }
 

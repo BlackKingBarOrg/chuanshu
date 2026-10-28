@@ -277,8 +277,8 @@ func usage() {
   chuanshu version          版本
 
 TUI 操作: 打开先选人（↑↓/jk 选择，打字搜索，Enter 进入聊天，Esc 回列表换人）
-           聊天中 Ctrl+N/P 快速切换 · Ctrl+V 粘贴图片 · /file <路径> 加附件
-           Ctrl+O 打开最近附件 · y/n 确认或拒绝收文件 · Ctrl+C 退出
+           聊天中 @ 模糊选文件 · Ctrl+V 粘贴图片/文件 · 拖文件进终端也可加附件
+           Ctrl+N/P 快速切换 · Ctrl+O 打开附件 · Ctrl+X 清空附件 · Ctrl+C 退出
 `)
 }
 

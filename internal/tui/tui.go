@@ -41,24 +41,29 @@ const (
 )
 
 type model struct {
-	paths    appcfg.Paths
-	client   ipc.Client
-	me       map[string]any
-	peers    []*store.PeerRecord
-	mode     uiMode
-	sel      int    // index into visibleConvs()
-	filter   string // roster search text (picker only)
-	conv     string // active conversation in chat mode
-	messages []*store.ChatMessage
-	unread   map[string]int
-	input    textinput.Model
-	status   string
-	offer    *offerView
-	attach   string
-	progress string
-	width    int
-	height   int
-	events   <-chan ipc.Event
+	paths      appcfg.Paths
+	client     ipc.Client
+	me         map[string]any
+	peers      []*store.PeerRecord
+	mode       uiMode
+	sel        int    // index into visibleConvs()
+	filter     string // roster search text (picker only)
+	conv       string // active conversation in chat mode
+	messages   []*store.ChatMessage
+	unread     map[string]int
+	input      textinput.Model
+	status     string
+	offer      *offerView
+	attachList []string // pending attachments (chips above the input)
+	progress   string
+	// @-mention file completion state.
+	fileIndex  []string
+	suggest    []string
+	suggestSel int
+	completing bool
+	width      int
+	height     int
+	events     <-chan ipc.Event
 }
 
 type peersMsg struct{ peers []*store.PeerRecord }
@@ -74,6 +79,7 @@ type sentMsg struct {
 }
 type fileSentMsg struct{ err error }
 type noticeMsg struct{ text string }
+type attachMsg struct{ path string }
 
 // Run starts the TUI program.
 func Run(paths appcfg.Paths) error {
@@ -320,6 +326,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case noticeMsg:
 		m.status = msg.text
 		return m, nil
+	case attachMsg:
+		m.addAttach(msg.path)
+		m.status = "已添加附件: " + filepath.Base(msg.path) + "（Enter 发送，Ctrl+X 清空）"
+		return m, nil
 	case sentMsg:
 		if msg.err != nil {
 			m.status = "发送失败: " + msg.err.Error()
@@ -332,7 +342,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = "文件发送失败: " + msg.err.Error()
 		} else {
 			m.status = "文件已送达 " + m.peerName(m.conv)
-			m.attach = ""
+			m.attachList = nil
 		}
 		return m, m.loadHistory(m.conv, true)
 	case eventMsg:
@@ -499,8 +509,30 @@ func (m *model) handleChatKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if msg.Paste {
 		content := strings.TrimSpace(msg.String())
 		if p, ok := existingPath(content); ok {
-			m.attach = p
+			m.addAttach(p)
 			m.status = "已添加附件: " + filepath.Base(p) + "（Enter 发送）"
+			return m, nil
+		}
+	}
+	// While the @ file picker is open, navigation keys belong to it.
+	if m.completing {
+		switch msg.Type {
+		case tea.KeyDown, tea.KeyCtrlN:
+			if len(m.suggest) > 0 {
+				m.suggestSel = (m.suggestSel + 1) % len(m.suggest)
+			}
+			return m, nil
+		case tea.KeyUp, tea.KeyCtrlP:
+			if len(m.suggest) > 0 {
+				m.suggestSel = (m.suggestSel - 1 + len(m.suggest)) % len(m.suggest)
+			}
+			return m, nil
+		case tea.KeyTab, tea.KeyEnter:
+			m.acceptSuggest()
+			return m, nil
+		case tea.KeyEsc:
+			m.completing = false
+			m.suggest = nil
 			return m, nil
 		}
 	}
@@ -517,6 +549,10 @@ func (m *model) handleChatKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.pasteFromClipboard()
 	case tea.KeyCtrlO:
 		return m, m.openLastAttachment()
+	case tea.KeyCtrlX:
+		m.attachList = nil
+		m.status = "已清空待发附件"
+		return m, nil
 	case tea.KeyTab:
 		if strings.HasPrefix(m.input.Value(), "/file ") {
 			completed := completePath(strings.TrimPrefix(m.input.Value(), "/file "))
@@ -531,37 +567,46 @@ func (m *model) handleChatKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
+	m.refreshSuggest()
 	return m, cmd
 }
 
 func (m *model) submit() tea.Cmd {
 	text := strings.TrimSpace(m.input.Value())
-	attach := m.attach
+	attachments := append([]string{}, m.attachList...)
 	m.input.SetValue("")
+	m.attachList = nil
+	m.completing = false
+	m.suggest = nil
 	if strings.HasPrefix(text, "/file ") {
-		attach = strings.Trim(strings.TrimPrefix(text, "/file "), "\"'")
+		p := strings.Trim(strings.TrimPrefix(text, "/file "), "\"'")
+		if p != "" {
+			attachments = append(attachments, p)
+		}
 		text = ""
 	}
 	if strings.HasPrefix(text, "/quit") {
 		return tea.Quit
 	}
-	if attach != "" {
-		if m.conv == store.BroadcastConv {
-			m.status = "广播频道不能发文件，请 Esc 回列表选一位同事"
-			return nil
-		}
-		m.status = "正在发送文件 " + filepath.Base(attach) + "…"
-		conv := m.conv
-		return func() tea.Msg {
-			_, err := m.client.RawCall("send_file", map[string]any{"peer": conv, "path": attach})
-			return fileSentMsg{err: err}
-		}
+	if len(attachments) > 0 && m.conv == store.BroadcastConv {
+		m.status = "广播频道不能发文件，请 Esc 回列表选一位同事"
+		m.attachList = attachments
+		return nil
 	}
-	if text == "" {
+	if len(attachments) == 0 && text == "" {
 		return nil
 	}
 	conv := m.conv
+	m.status = "正在发送…"
 	return func() tea.Msg {
+		for _, p := range attachments {
+			if _, err := m.client.RawCall("send_file", map[string]any{"peer": conv, "path": p}); err != nil {
+				return fileSentMsg{err: err}
+			}
+		}
+		if text == "" {
+			return fileSentMsg{}
+		}
 		raw, err := m.client.RawCall("send_text", map[string]any{"peer": conv, "text": text})
 		var cm store.ChatMessage
 		if len(raw) > 0 {
@@ -591,8 +636,7 @@ func (m *model) pasteFromClipboard() tea.Cmd {
 						}
 						name := filepath.Join(m.paths.CacheDir, "paste-"+time.Now().Format("20060102-150405")+ext)
 						if err := os.WriteFile(name, data, 0o644); err == nil {
-							m.attach = name
-							return noticeMsg{text: "已粘贴图片附件（Enter 发送）: " + filepath.Base(name)}
+							return attachMsg{path: name}
 						}
 					}
 				}
@@ -601,8 +645,7 @@ func (m *model) pasteFromClipboard() tea.Cmd {
 		out, err := exec.Command("wl-paste", "--no-newline").Output()
 		if err == nil {
 			if p, ok := existingPath(strings.TrimSpace(string(out))); ok {
-				m.attach = p
-				return noticeMsg{text: "已添加附件: " + filepath.Base(p) + "（Enter 发送）"}
+				return attachMsg{path: p}
 			}
 		}
 		return noticeMsg{text: "剪贴板里没有图片或文件"}
@@ -737,26 +780,63 @@ func (m *model) View() string {
 		left.WriteString("\n" + dimStyle.Render("Esc 回列表选人\nCtrl+N/P 快速切换"))
 	}
 
-	right := m.viewRight(rightW, h)
+	// Fixed layout (coding-agent style): the history pane gets
+	// exactly the rows left over above a pinned composer. However
+	// long the history grows, the input never moves.
+	suggestLines := 0
+	if m.mode == modeChat && m.completing && len(m.suggest) > 0 {
+		suggestLines = len(m.suggest)
+	}
+	footerLines := 3 // separator + hint + status (picker)
+	if m.mode == modeChat {
+		footerLines = 4 + suggestLines // separator + 发给 + input + status + popup
+	}
+	mainH := max(5, h-footerLines)
+
+	right := m.viewRight(rightW, mainH)
 
 	body := lipgloss.JoinHorizontal(lipgloss.Top,
-		lipgloss.NewStyle().Width(leftW).Render(left.String()),
-		lipgloss.NewStyle().Width(rightW).Render(right),
+		lipgloss.NewStyle().Width(leftW).Height(mainH).MaxHeight(mainH).Render(left.String()),
+		lipgloss.NewStyle().Width(rightW).Height(mainH).MaxHeight(mainH).Render(right),
 	)
 	status := m.status
 	if m.offer != nil {
 		status = warnStyle.Render(status)
 	}
-	if m.attach != "" && m.mode == modeChat {
-		status += " · 附件: " + filepath.Base(m.attach)
+	var footer strings.Builder
+	if suggestLines > 0 {
+		for i, s := range m.suggest {
+			label := "  " + shortenHome(s)
+			if i == m.suggestSel {
+				label = selectedStyle.Render("▸ " + shortenHome(s))
+			}
+			footer.WriteString(label + "\n")
+		}
 	}
-	footer := strings.Repeat("─", min(w, leftW+rightW+3)) + "\n"
+	footer.WriteString(strings.Repeat("─", min(w, leftW+rightW+3)) + "\n")
 	if m.mode == modeChat {
-		footer += dimStyle.Render("发给 "+m.peerName(m.conv)+": ") + "\n" + m.input.View() + "\n"
+		toLine := "发给 " + m.peerName(m.conv) + ": 输入 @ 选文件 · Ctrl+V 粘贴图片"
+		if len(m.attachList) > 0 {
+			names := make([]string, 0, len(m.attachList))
+			for _, a := range m.attachList {
+				names = append(names, filepath.Base(a))
+			}
+			toLine = "发给 " + m.peerName(m.conv) + " · 附件: " + strings.Join(names, ", ") + "（Enter 发送，Ctrl+X 清空）"
+		}
+		footer.WriteString(dimStyle.Render(toLine) + "\n")
+		footer.WriteString(m.input.View() + "\n")
 	} else {
-		footer += dimStyle.Render("在左侧选一位同事，按 Enter 开始聊天") + "\n"
+		footer.WriteString(dimStyle.Render("在左侧选一位同事，按 Enter 开始聊天") + "\n")
 	}
-	return body + "\n" + footer + dimStyle.Render(status)
+	return body + "\n" + footer.String() + dimStyle.Render(status)
+}
+
+// shortenHome renders ~ for the home directory in picker rows.
+func shortenHome(p string) string {
+	if home, err := os.UserHomeDir(); err == nil && home != "" && strings.HasPrefix(p, home) {
+		return "~" + strings.TrimPrefix(p, home)
+	}
+	return p
 }
 
 // displayName renders one roster entry with presence.
@@ -814,7 +894,7 @@ func (m *model) viewPickCard(h int) string {
 	b.WriteString(accentStyle.Render("按 Enter 开始聊天") + "\n")
 	if len(m.messages) > 0 {
 		b.WriteString("\n" + dimStyle.Render("最近消息:") + "\n")
-		b.WriteString(m.messageLines(5))
+		b.WriteString(m.messageLines(max(1, h-7)))
 	}
 	return b.String()
 }
@@ -830,7 +910,7 @@ func (m *model) viewChat(h int) string {
 		}
 		b.WriteString(titleStyle.Render("与 "+m.peerName(m.conv)+" 聊天") + "  " + dimStyle.Render(state) + "\n")
 	}
-	b.WriteString(m.messageLines(max(5, h-9)))
+	b.WriteString(m.messageLines(max(1, h-1)))
 	return b.String()
 }
 
