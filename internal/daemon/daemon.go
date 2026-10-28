@@ -52,6 +52,7 @@ type Daemon struct {
 	incomingOffers map[string]*incomingOffer
 	incoming       map[string]*incomingTransfer
 	acceptedGroups map[string]bool
+	windowAddr     string
 	subs           map[chan Event]struct{}
 	listener       net.Listener
 	startedAt      time.Time
@@ -271,6 +272,77 @@ func (d *Daemon) ResolvePeer(query string) (*store.PeerRecord, error) {
 		return nil, fmt.Errorf("找不到同事 %q（先确认对方在线并出现在列表里）", query)
 	}
 	return p, nil
+}
+
+// UnreadSummary is the bar-widget view of unread state.
+type UnreadSummary struct {
+	Total      int            `json:"total"`
+	ByConv     map[string]int `json:"by_conv"`
+	LatestConv string         `json:"latest_conv,omitempty"`
+	LatestName string         `json:"latest_name,omitempty"`
+	LatestText string         `json:"latest_text,omitempty"`
+}
+
+// UnreadSummary computes the current unread summary.
+func (d *Daemon) UnreadSummary() UnreadSummary {
+	by := d.Store.UnreadCounts()
+	total := 0
+	for _, n := range by {
+		total += n
+	}
+	sum := UnreadSummary{Total: total, ByConv: by}
+	if latest := d.Store.LatestUnread(); latest != nil {
+		sum.LatestConv = latest.Conv
+		sum.LatestName = latest.FromName
+		text := latest.Text
+		if text == "" && latest.Attachment != nil {
+			text = "[文件] " + latest.Attachment.Name
+		}
+		sum.LatestText = text
+	}
+	return sum
+}
+
+func (d *Daemon) emitUnread() {
+	d.emit(Event{Kind: "unread", Data: d.UnreadSummary()})
+}
+
+// RegisterWindow records the Hyprland window address of the
+// running TUI so `chuanshu open` can focus it.
+func (d *Daemon) RegisterWindow(addr string) {
+	d.mu.Lock()
+	d.windowAddr = addr
+	d.mu.Unlock()
+}
+
+// UnregisterWindow clears the TUI window registration.
+func (d *Daemon) UnregisterWindow(addr string) {
+	d.mu.Lock()
+	if d.windowAddr == addr {
+		d.windowAddr = ""
+	}
+	d.mu.Unlock()
+}
+
+// Window returns the registered TUI window address, if any.
+func (d *Daemon) Window() string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.windowAddr
+}
+
+// FocusConv asks the running TUI to jump to a conversation.
+func (d *Daemon) FocusConv(query string) (string, error) {
+	conv := query
+	if conv != "" && conv != store.BroadcastConv {
+		peer, err := d.ResolvePeer(query)
+		if err != nil {
+			return "", err
+		}
+		conv = peer.PeerID
+	}
+	d.emit(Event{Kind: "focus", Data: map[string]any{"conv": conv}})
+	return conv, nil
 }
 
 // emit fans an event out to subscribers (non-blocking).

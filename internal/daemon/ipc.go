@@ -88,6 +88,7 @@ func (d *Daemon) dispatch(req ipcRequest) ipcResponse {
 		Conv       string `json:"conv"`
 		TransferID string `json:"transfer_id"`
 		Accept     bool   `json:"accept"`
+		Address    string `json:"address"`
 	}
 	if len(req.Params) > 0 {
 		_ = json.Unmarshal(req.Params, &p)
@@ -95,6 +96,26 @@ func (d *Daemon) dispatch(req ipcRequest) ipcResponse {
 	switch req.Method {
 	case "me":
 		return ok(d.Me())
+	case "unread":
+		return ok(d.UnreadSummary())
+	case "register_window":
+		d.RegisterWindow(p.Address)
+		return ok(true)
+	case "unregister_window":
+		d.UnregisterWindow(p.Address)
+		return ok(true)
+	case "window":
+		return ok(map[string]any{"address": d.Window()})
+	case "focus_conv":
+		conv := p.Conv
+		if conv == "" {
+			conv = p.Peer
+		}
+		resolved, err := d.FocusConv(conv)
+		if err != nil {
+			return fail(err)
+		}
+		return ok(map[string]any{"conv": resolved})
 	case "peers":
 		return ok(d.Peers())
 	case "history":

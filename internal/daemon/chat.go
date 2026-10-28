@@ -96,6 +96,7 @@ func (d *Daemon) handleChat(pc *peerConn, msg *wire.Message) {
 	// regardless of whether the human has looked yet.
 	_ = pc.sess.SendMessage(wire.Message{Type: wire.TypeAckDelivered, ID: msg.ID})
 	d.emit(Event{Kind: "message", Data: cm})
+	d.emitUnread()
 	label := msg.Text
 	if len([]rune(label)) > 40 {
 		label = string([]rune(label)[:40]) + "…"
@@ -250,6 +251,7 @@ func (d *Daemon) MarkRead(conv string) error {
 		}
 	}
 	d.emit(Event{Kind: "message", Data: map[string]any{"conv": conv, "read": true}})
+	d.emitUnread()
 	return nil
 }
 

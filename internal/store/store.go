@@ -260,6 +260,22 @@ func (s *Store) UnreadCounts() map[string]int {
 	return out
 }
 
+// LatestUnread returns the newest unread received message.
+func (s *Store) LatestUnread() *ChatMessage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var best *ChatMessage
+	for _, m := range s.messages {
+		if !m.Mine && m.Status == "received" {
+			if best == nil || m.TS.After(best.TS) {
+				cp := *m
+				best = &cp
+			}
+		}
+	}
+	return best
+}
+
 // MarkRead flips received messages in a conversation to read and
 // returns their ids so the caller can send read acks.
 func (s *Store) MarkRead(conv string) ([]string, error) {

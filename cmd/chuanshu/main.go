@@ -45,7 +45,7 @@ func run(args []string) error {
 		return err
 	}
 	if len(args) == 0 {
-		return tui.Run(paths)
+		return tui.Run(paths, "")
 	}
 	switch args[0] {
 	case "daemon":
@@ -57,7 +57,19 @@ func run(args []string) error {
 		}
 		return d.Start(ctx)
 	case "tui":
-		return tui.Run(paths)
+		openPeer := ""
+		if len(args) >= 3 && args[1] == "--open" {
+			openPeer = args[2]
+		}
+		return tui.Run(paths, openPeer)
+	case "open", "focus":
+		peer := ""
+		if len(args) > 1 {
+			peer = args[1]
+		}
+		return cmdOpen(paths, peer)
+	case "unread":
+		return cmdUnread(paths, args[1:])
 	case "version", "--version", "-v":
 		fmt.Printf("chuanshu %s (commit %s)\n", version, commit)
 		// Also report the running daemon's build: replacing the
@@ -246,6 +258,84 @@ func printMessage(m *store.ChatMessage) {
 	fmt.Printf("%s %s %s\n", m.TS.Format("01-02 15:04"), who, m.Text)
 }
 
+// cmdOpen focuses the running TUI window (jumping to a
+// conversation when asked) or launches a dedicated terminal
+// window for chuanshu. This backs the Omarchy bar widget.
+func cmdOpen(paths appcfg.Paths, peer string) error {
+	if err := ipc.EnsureDaemon(paths); err != nil {
+		return err
+	}
+	client := ipc.Client{Paths: paths}
+	target := peer
+	if target == "" {
+		var sum daemon.UnreadSummary
+		if err := client.Call("unread", nil, &sum); err == nil {
+			target = sum.LatestConv
+		}
+	}
+	var win struct {
+		Address string `json:"address"`
+	}
+	if err := client.Call("window", nil, &win); err == nil && win.Address != "" {
+		if err := exec.Command("hyprctl", "dispatch", "focuswindow", "address:"+win.Address).Run(); err == nil {
+			if target != "" {
+				var out map[string]any
+				_ = client.Call("focus_conv", map[string]any{"conv": target}, &out)
+			}
+			fmt.Println("已切到传书窗口")
+			return nil
+		}
+		var ok bool
+		_ = client.Call("unregister_window", map[string]any{"address": win.Address}, &ok)
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	termArgs := []string{"--app-id=chuanshu", "--title=Chuanshu", exe}
+	if target != "" {
+		termArgs = append(termArgs, "tui", "--open", target)
+	}
+	cmd := exec.Command("xdg-terminal-exec", termArgs...)
+	logFile, err := os.OpenFile(filepath.Join(paths.DataDir, "open.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err == nil {
+		cmd.Stdout = logFile
+		cmd.Stderr = logFile
+		defer logFile.Close()
+	}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("打开终端失败: %w", err)
+	}
+	fmt.Println("已打开传书窗口")
+	return nil
+}
+
+// cmdUnread prints the unread summary (for the bar widget: --json).
+func cmdUnread(paths appcfg.Paths, args []string) error {
+	if err := ipc.EnsureDaemon(paths); err != nil {
+		return err
+	}
+	client := ipc.Client{Paths: paths}
+	var sum daemon.UnreadSummary
+	if err := client.Call("unread", nil, &sum); err != nil {
+		return err
+	}
+	for _, a := range args {
+		if a == "--json" {
+			raw, _ := json.Marshal(sum)
+			fmt.Println(string(raw))
+			return nil
+		}
+	}
+	if sum.Total == 0 {
+		fmt.Println("没有未读消息")
+		return nil
+	}
+	fmt.Printf("未读 %d 条，最近来自 %s：%s\n", sum.Total, sum.LatestName, sum.LatestText)
+	return nil
+}
+
 func sendScreenshot(client ipc.Client, paths appcfg.Paths, peer string) error {
 	// Region select with slurp when available, full screen otherwise.
 	imgPath := filepath.Join(paths.CacheDir, "shot-"+time.Now().Format("20060102-150405")+".png")
@@ -275,6 +365,8 @@ func usage() {
 
 用法:
   chuanshu                  打开 TUI（自动启动后台服务）
+  chuanshu open [同事]      打开/聚焦传书窗口（顶栏组件用；有未读直达最近未读）
+  chuanshu unread [--json]  未读汇总（顶栏组件用 JSON 输出）
   chuanshu daemon           前台运行守护进程（供 systemd 调用）
   chuanshu peers            列出同事与在线状态
   chuanshu peer-add <ip:端口>  手动连接（广播被屏蔽时）

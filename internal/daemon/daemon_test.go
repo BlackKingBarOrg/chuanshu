@@ -108,6 +108,51 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Fatalf("timeout waiting for %s", what)
 }
 
+func TestUnreadSummaryAndFocus(t *testing.T) {
+	t.Setenv("CHUANSHU_DISABLE_MDNS", "1")
+	alice := startDaemon(t, "Alice")
+	bob := startDaemon(t, "Bob")
+	if _, err := alice.d.AddManualPeer(fmt.Sprintf("127.0.0.1:%d", bob.d.Cfg.TCPPort)); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "bob knows alice", func() bool {
+		_, ok := bob.d.Store.Resolve("Alice")
+		return ok
+	})
+	if _, err := alice.d.SendText("Bob", "未读测试"); err != nil {
+		t.Fatal(err)
+	}
+	aliceID := alice.d.ID.MyPeerID()
+	waitFor(t, "bob unread summary", func() bool {
+		sum := bob.d.UnreadSummary()
+		return sum.Total == 1 && sum.LatestConv == aliceID && sum.LatestName == "Alice"
+	})
+	if err := bob.d.MarkRead(aliceID); err != nil {
+		t.Fatal(err)
+	}
+	if sum := bob.d.UnreadSummary(); sum.Total != 0 {
+		t.Fatalf("after MarkRead total = %d, want 0", sum.Total)
+	}
+	// Focus asks resolve nicknames to conversation ids.
+	conv, err := bob.d.FocusConv("Alice")
+	if err != nil || conv != aliceID {
+		t.Fatalf("FocusConv = %q, %v; want %q", conv, err, aliceID)
+	}
+	// Window registration round-trips.
+	bob.d.RegisterWindow("0xabc")
+	if bob.d.Window() != "0xabc" {
+		t.Fatal("window not registered")
+	}
+	bob.d.UnregisterWindow("0xabc")
+	if bob.d.Window() != "" {
+		t.Fatal("window not unregistered")
+	}
+	// Stop both daemons before TempDir cleanup races their writes.
+	alice.cancel()
+	bob.cancel()
+	time.Sleep(150 * time.Millisecond)
+}
+
 func TestTwoDaemonsChatAndFile(t *testing.T) {
 	t.Setenv("CHUANSHU_DISABLE_MDNS", "1")
 	alice := startDaemon(t, "Alice")

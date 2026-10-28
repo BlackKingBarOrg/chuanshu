@@ -62,6 +62,7 @@ type model struct {
 	suggestSel int
 	completing bool
 	hoverKey   string // attachment key currently under the mouse
+	openPeer   string // conversation to open once peers load (chuanshu open)
 	width      int
 	height     int
 	events     <-chan ipc.Event
@@ -82,8 +83,9 @@ type fileSentMsg struct{ err error }
 type noticeMsg struct{ text string }
 type attachMsg struct{ path string }
 
-// Run starts the TUI program.
-func Run(paths appcfg.Paths) error {
+// Run starts the TUI program. openPeer, when set, jumps straight
+// into that conversation once the roster loads.
+func Run(paths appcfg.Paths, openPeer string) error {
 	if err := ipc.EnsureDaemon(paths); err != nil {
 		return err
 	}
@@ -97,13 +99,66 @@ func Run(paths appcfg.Paths) error {
 	m := &model{
 		paths: paths, client: client, mode: modePick,
 		input: ti, events: events, unread: map[string]int{},
-		status: "选择一位同事开始聊天",
+		status: "选择一位同事开始聊天", openPeer: openPeer,
+	}
+	// Register our Hyprland window with the daemon so that
+	// `chuanshu open` (bar widget, notification) can focus us.
+	if addr := detectWindowAddress(); addr != "" {
+		var ok bool
+		_ = client.Call("register_window", map[string]any{"address": addr}, &ok)
+		defer func() {
+			var ok bool
+			_ = client.Call("unregister_window", map[string]any{"address": addr}, &ok)
+		}()
 	}
 	// All-motion (not just cell-motion): plain hover must reach us
 	// or attachment rows can never underline on hover.
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseAllMotion())
 	_, err = p.Run()
 	return err
+}
+
+// detectWindowAddress finds this terminal's Hyprland window by
+// walking our ancestor pids (terminal is a grandparent) and
+// matching them against `hyprctl clients`.
+func detectWindowAddress() string {
+	if os.Getenv("HYPRLAND_INSTANCE_SIGNATURE") == "" {
+		return ""
+	}
+	ancestors := map[int]bool{}
+	for pid := os.Getpid(); pid > 1; {
+		ancestors[pid] = true
+		raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+		if err != nil {
+			break
+		}
+		fields := strings.Fields(string(raw))
+		if len(fields) < 4 {
+			break
+		}
+		var ppid int
+		if _, err := fmt.Sscan(fields[3], &ppid); err != nil || ppid <= 1 {
+			break
+		}
+		pid = ppid
+	}
+	out, err := exec.Command("hyprctl", "clients", "-j").Output()
+	if err != nil {
+		return ""
+	}
+	var clients []struct {
+		Address string `json:"address"`
+		Pid     int    `json:"pid"`
+	}
+	if json.Unmarshal(out, &clients) != nil {
+		return ""
+	}
+	for _, c := range clients {
+		if ancestors[c.Pid] {
+			return c.Address
+		}
+	}
+	return ""
 }
 
 func (m *model) Init() tea.Cmd {
@@ -257,8 +312,24 @@ func (m *model) enterChat() tea.Cmd {
 	if conv == "" {
 		return nil
 	}
+	return m.enterConv(conv)
+}
+
+// enterConv opens a specific conversation for chatting.
+func (m *model) enterConv(conv string) tea.Cmd {
+	if conv == "" {
+		return nil
+	}
 	m.conv = conv
 	m.mode = modeChat
+	m.filter = ""
+	// Keep the picker highlight in sync for when we go back.
+	for i, c := range m.convs() {
+		if c == conv {
+			m.sel = i
+			break
+		}
+	}
 	m.input.Focus()
 	m.messages = nil
 	if conv == store.BroadcastConv {
@@ -314,6 +385,15 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case peersMsg:
 		m.peers = msg.peers
+		if m.openPeer != "" {
+			target := m.openPeer
+			m.openPeer = ""
+			for _, c := range m.convs() {
+				if c == target || m.peerName(c) == target {
+					return m, m.enterConv(c)
+				}
+			}
+		}
 		if m.mode == modePick {
 			return m, m.loadHistory(m.selConv(), false)
 		}
@@ -374,6 +454,13 @@ func (m *model) handleEvent(ev ipc.Event) tea.Cmd {
 		var cm store.ChatMessage
 		if json.Unmarshal(ev.Data, &cm) == nil {
 			return m.loadHistory(m.displayConv(), m.mode == modeChat)
+		}
+	case "focus":
+		var f struct {
+			Conv string `json:"conv"`
+		}
+		if json.Unmarshal(ev.Data, &f) == nil && f.Conv != "" {
+			return m.enterConv(f.Conv)
 		}
 	case "offer":
 		var o offerView

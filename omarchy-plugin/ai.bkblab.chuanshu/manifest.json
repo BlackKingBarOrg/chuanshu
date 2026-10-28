@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "ai.bkblab.chuanshu",
+  "name": "Chuanshu",
+  "version": "0.1.0",
+  "author": "BlackKingBarOrg",
+  "license": "GPL-3.0-or-later",
+  "description": "LAN chat for small Omarchy teams: unread badge in the bar, click to open or focus the chat window.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Chuanshu",
+    "description": "Unread messages; click opens the chat",
+    "category": "Communication",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}

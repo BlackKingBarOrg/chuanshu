@@ -466,6 +466,7 @@ func (d *Daemon) finishReceive(pc *peerConn, transferID string) {
 	_ = d.Store.AddMessage(cm)
 	_ = pc.sess.SendMessage(wire.Message{Type: wire.TypeFileDone, TransferID: transferID})
 	d.emit(Event{Kind: "message", Data: cm})
+	d.emitUnread()
 	d.notify("文件接收完成", filepath.Base(final))
 }
 

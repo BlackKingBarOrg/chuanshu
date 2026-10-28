@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=传书 Chuanshu
+Comment=局域网聊天与文件传输
+Exec=chuanshu open
+Icon=chuanshu
+Terminal=false
+Categories=Network;Chat;
+Keywords=chat;lan;file;传书;
+StartupNotify=false
