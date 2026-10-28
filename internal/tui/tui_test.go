@@ -143,6 +143,36 @@ func TestAttachmentClickMapping(t *testing.T) {
 	}
 }
 
+func TestAttachmentHoverHighlight(t *testing.T) {
+	m := testModel()
+	m.mode = modeChat
+	m.conv = "id-zhangsan"
+	m.width, m.height = 100, 24
+	m.messages = []*store.ChatMessage{
+		{ID: "1", Conv: m.conv, FromName: "张三", Text: "先看这个"},
+		{ID: "2", Conv: m.conv, FromName: "张三", Attachment: &store.Attachment{TransferID: "tx1", Name: "cat.png", LocalPath: "/tmp/cat.png"}},
+	}
+	hover := tea.MouseMsg{Action: tea.MouseActionMotion, X: 40, Y: 2}
+	updated, _ := m.Update(hover)
+	m = updated.(*model)
+	if m.hoverKey != "tx1" {
+		t.Fatalf("hoverKey = %q, want tx1 (attachment row underlines)", m.hoverKey)
+	}
+	// Moving onto a plain text row clears the affordance.
+	updated, _ = m.Update(tea.MouseMsg{Action: tea.MouseActionMotion, X: 40, Y: 1})
+	m = updated.(*model)
+	if m.hoverKey != "" {
+		t.Fatalf("hoverKey = %q, want cleared on text row", m.hoverKey)
+	}
+	// Moving into the roster also clears it.
+	m.hoverKey = "tx1"
+	updated, _ = m.Update(tea.MouseMsg{Action: tea.MouseActionMotion, X: 5, Y: 2})
+	m = updated.(*model)
+	if m.hoverKey != "" {
+		t.Fatalf("hoverKey = %q, want cleared over roster", m.hoverKey)
+	}
+}
+
 func TestMentionQueryAndFuzzyFilter(t *testing.T) {
 	if q, ok := mentionQuery("看看这个 @rep"); !ok || q != "rep" {
 		t.Fatalf("mentionQuery = %q,%v; want rep,true", q, ok)

@@ -61,6 +61,7 @@ type model struct {
 	suggest    []string
 	suggestSel int
 	completing bool
+	hoverKey   string // attachment key currently under the mouse
 	width      int
 	height     int
 	events     <-chan ipc.Event
@@ -446,6 +447,20 @@ func openAttachment(path string, reveal bool) tea.Cmd {
 // Clicking an attachment row in the chat opens it; Ctrl+click
 // reveals it in the file manager.
 func (m *model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	// Hovering an attachment row underlines it (see View), so it
+	// reads as clickable before the user commits to a click.
+	if msg.Action == tea.MouseActionMotion || msg.Type == tea.MouseMotion {
+		m.hoverKey = ""
+		if m.mode == modeChat && msg.X >= 26 && msg.Y >= 1 && msg.Y < m.mainHeight() {
+			if cm := m.messageAtRow(msg.Y); cm != nil && cm.Attachment != nil && cm.Attachment.LocalPath != "" {
+				m.hoverKey = cm.Attachment.TransferID
+				if m.hoverKey == "" {
+					m.hoverKey = cm.Attachment.LocalPath
+				}
+			}
+		}
+		return m, nil
+	}
 	if msg.Type != tea.MouseLeft {
 		return m, nil
 	}
@@ -781,6 +796,7 @@ var (
 	onlineStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
 	accentStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Bold(true)
 	warnStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Bold(true)
+	hoverStyle    = lipgloss.NewStyle().Underline(true).Foreground(lipgloss.Color("6")).Bold(true)
 )
 
 func (m *model) View() string {
@@ -845,6 +861,9 @@ func (m *model) View() string {
 	if m.offer != nil {
 		status = warnStyle.Render(status)
 	}
+	if m.hoverKey != "" {
+		status += dimStyle.Render(" · 点击打开，Ctrl+点击在文件管理器显示")
+	}
 	var footer strings.Builder
 	if suggestLines > 0 {
 		for i, s := range m.suggest {
@@ -871,6 +890,27 @@ func (m *model) View() string {
 		footer.WriteString(dimStyle.Render("在左侧选一位同事，按 Enter 开始聊天") + "\n")
 	}
 	return body + "\n" + footer.String() + dimStyle.Render(status)
+}
+
+// rightWidth is the chat pane width for the current frame.
+func (m *model) rightWidth() int {
+	w := m.width
+	if w == 0 {
+		w = 100
+	}
+	return max(30, w-26-3)
+}
+
+// truncRunes shortens s to at most n runes with an ellipsis.
+func truncRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	if n <= 1 {
+		return "…"
+	}
+	return string(r[:n-1]) + "…"
 }
 
 // mainHeight is the fixed history-pane height for this frame.
@@ -983,9 +1023,22 @@ func (m *model) messageLines(limit int) string {
 		ts := cm.TS.Format("15:04")
 		if cm.Attachment != nil {
 			a := cm.Attachment
-			line := fmt.Sprintf("%s %s %s [%s %s]", ts, who, fileStyle.Render("文件"), a.Name, humanSize(a.Size))
+			// Keep every message on exactly one terminal row:
+			// click-to-row mapping depends on it.
+			name := truncRunes(a.Name, 24)
+			key := a.TransferID
+			if key == "" {
+				key = a.LocalPath
+			}
+			if m.hoverKey != "" && m.hoverKey == key {
+				name = hoverStyle.Render(name)
+			}
+			line := fmt.Sprintf("%s %s %s [%s %s]", ts, who, fileStyle.Render("文件"), name, humanSize(a.Size))
 			if a.LocalPath != "" {
-				line += dimStyle.Render(" ↗点击打开·Ctrl+定位")
+				suffix := " ↗点击打开·Ctrl+定位"
+				if lipgloss.Width(line)+lipgloss.Width(suffix) <= m.rightWidth() {
+					line += dimStyle.Render(suffix)
+				}
 			}
 			if cm.Status == "failed" {
 				line += errStyle.Render(" 发送失败")
