@@ -4,7 +4,12 @@
 set -eu
 cd "$(dirname "$0")/.."
 
-GO="$(command -v go || true)"
+GO=""
+# A mise shim named "go" that has no activated version must not
+# count: only accept a go that actually runs.
+if command -v go >/dev/null 2>&1 && go version >/dev/null 2>&1; then
+  GO="go"
+fi
 if [ -z "$GO" ] && command -v mise >/dev/null 2>&1; then
   mise install go@latest >/dev/null 2>&1 || true
   GO="mise x go@latest -- go"
