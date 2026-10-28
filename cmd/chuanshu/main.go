@@ -288,7 +288,11 @@ func cmdOpen(paths appcfg.Paths, peer string) error {
 		}
 	}
 	if win.Address != "" {
-		if err := exec.Command("hyprctl", "dispatch", "focuswindow", "address:"+win.Address).Run(); err == nil {
+		// Omarchy's Hyprland uses the Lua dispatcher form; stock
+		// Hyprland uses focuswindow. Try both.
+		focused := exec.Command("hyprctl", "dispatch", fmt.Sprintf("hl.dsp.focus({ window = \"address:%s\" })", win.Address)).Run() == nil ||
+			exec.Command("hyprctl", "dispatch", "focuswindow", "address:"+win.Address).Run() == nil
+		if focused {
 			if target != "" {
 				var out map[string]any
 				_ = client.Call("focus_conv", map[string]any{"conv": target}, &out)
