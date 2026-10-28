@@ -287,6 +287,15 @@ func cmdOpen(paths appcfg.Paths, peer string) error {
 			}
 		}
 	}
+	if win.Address != "" && !windowExists(win.Address) {
+		// Stale registration: that window is gone (a TUI killed
+		// with its terminal never gets to unregister). Focusing a
+		// dead address silently "succeeds", so clear it and fall
+		// through to launching a fresh window.
+		var ok bool
+		_ = client.Call("unregister_window", map[string]any{"address": win.Address}, &ok)
+		win.Address = ""
+	}
 	if win.Address != "" {
 		// Omarchy's Hyprland uses the Lua dispatcher form; stock
 		// Hyprland uses focuswindow. Try both.
@@ -324,6 +333,27 @@ func cmdOpen(paths appcfg.Paths, peer string) error {
 	}
 	fmt.Println("已打开传书窗口")
 	return nil
+}
+
+// windowExists reports whether a Hyprland window address is
+// still mapped.
+func windowExists(addr string) bool {
+	out, err := exec.Command("hyprctl", "clients", "-j").Output()
+	if err != nil {
+		return false
+	}
+	var clients []struct {
+		Address string `json:"address"`
+	}
+	if json.Unmarshal(out, &clients) != nil {
+		return false
+	}
+	for _, c := range clients {
+		if c.Address == addr {
+			return true
+		}
+	}
+	return false
 }
 
 // findChuanshuWindow locates a dedicated chuanshu terminal
