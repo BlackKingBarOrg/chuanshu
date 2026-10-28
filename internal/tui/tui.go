@@ -99,7 +99,9 @@ func Run(paths appcfg.Paths) error {
 		input: ti, events: events, unread: map[string]int{},
 		status: "选择一位同事开始聊天",
 	}
-	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	// All-motion (not just cell-motion): plain hover must reach us
+	// or attachment rows can never underline on hover.
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseAllMotion())
 	_, err = p.Run()
 	return err
 }
@@ -824,7 +826,8 @@ var (
 	onlineStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
 	accentStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Bold(true)
 	warnStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Bold(true)
-	hoverStyle    = lipgloss.NewStyle().Underline(true).Foreground(lipgloss.Color("6")).Bold(true)
+	hoverStyle    = lipgloss.NewStyle().Underline(true).Foreground(lipgloss.Color("6")).Bold(true).Background(lipgloss.Color("238"))
+	linkStyle     = lipgloss.NewStyle().Underline(true).Foreground(lipgloss.Color("6"))
 )
 
 func (m *model) View() string {
@@ -1058,8 +1061,13 @@ func (m *model) messageLines(limit int) string {
 			if key == "" {
 				key = a.LocalPath
 			}
+			// Attachments always render as links (underlined),
+			// so clickability never depends on the terminal
+			// bothering to report mouse motion; hover intensifies.
 			if m.hoverKey != "" && m.hoverKey == key {
 				name = hoverStyle.Render(name)
+			} else {
+				name = linkStyle.Render(name)
 			}
 			line := fmt.Sprintf("%s %s %s [%s %s]", ts, who, fileStyle.Render("文件"), name, humanSize(a.Size))
 			if a.LocalPath != "" {
