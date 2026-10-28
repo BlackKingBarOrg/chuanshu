@@ -173,6 +173,23 @@ func TestAttachmentHoverHighlight(t *testing.T) {
 	}
 }
 
+func TestClickRevealSemantics(t *testing.T) {
+	// Plain click and Ctrl+click open the file itself; only
+	// Alt+click and right click reveal it in the file manager.
+	if clickReveal(tea.MouseMsg{Type: tea.MouseLeft}) {
+		t.Fatal("plain click must open, not reveal")
+	}
+	if clickReveal(tea.MouseMsg{Type: tea.MouseLeft, Ctrl: true}) {
+		t.Fatal("Ctrl+click must open, not reveal")
+	}
+	if !clickReveal(tea.MouseMsg{Type: tea.MouseLeft, Alt: true}) {
+		t.Fatal("Alt+click must reveal")
+	}
+	if !clickReveal(tea.MouseMsg{Type: tea.MouseRight}) {
+		t.Fatal("right click must reveal")
+	}
+}
+
 func TestMentionQueryAndFuzzyFilter(t *testing.T) {
 	if q, ok := mentionQuery("看看这个 @rep"); !ok || q != "rep" {
 		t.Fatalf("mentionQuery = %q,%v; want rep,true", q, ok)

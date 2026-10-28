@@ -428,18 +428,31 @@ func (m *model) messageAtRow(y int) *store.ChatMessage {
 // reveals it in the file manager when reveal is true.
 func openAttachment(path string, reveal bool) tea.Cmd {
 	return func() tea.Msg {
-		target := path
-		what := "已用系统程序打开: "
 		if reveal {
-			target = filepath.Dir(path)
-			what = "已在文件管理器打开所在文件夹: "
+			// Prefer a file manager that selects the file; fall
+			// back to opening its folder.
+			if nautilus, err := exec.LookPath("nautilus"); err == nil {
+				if err := exec.Command(nautilus, "--select", path).Start(); err == nil {
+					return noticeMsg{text: "已在文件管理器定位: " + filepath.Base(path)}
+				}
+			}
+			if err := exec.Command("xdg-open", filepath.Dir(path)).Start(); err != nil {
+				return noticeMsg{text: "打开文件管理器失败: " + err.Error()}
+			}
+			return noticeMsg{text: "已在文件管理器打开所在文件夹: " + filepath.Base(path)}
 		}
-		cmd := exec.Command("xdg-open", target)
-		if err := cmd.Start(); err != nil {
+		if err := exec.Command("xdg-open", path).Start(); err != nil {
 			return noticeMsg{text: "打开失败: " + err.Error()}
 		}
-		return noticeMsg{text: what + filepath.Base(path)}
+		return noticeMsg{text: "已用系统程序打开: " + filepath.Base(path)}
 	}
+}
+
+// clickReveal decides whether a mouse click on an attachment
+// reveals it in the file manager (Alt+click or right click)
+// instead of opening it (plain click and Ctrl+click both open).
+func clickReveal(msg tea.MouseMsg) bool {
+	return msg.Type == tea.MouseRight || msg.Alt
 }
 
 // handleMouse: clicking a roster row selects it; clicking the
@@ -461,15 +474,17 @@ func (m *model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	if msg.Type != tea.MouseLeft {
+	if msg.Type != tea.MouseLeft && msg.Type != tea.MouseRight {
 		return m, nil
 	}
 	if m.mode == modeChat && msg.X >= 26 && msg.Y >= 1 && msg.Y < m.mainHeight() {
 		if cm := m.messageAtRow(msg.Y); cm != nil && cm.Attachment != nil && cm.Attachment.LocalPath != "" {
-			reveal := msg.Ctrl || msg.Alt // Ctrl (or Alt) + click reveals in the file manager
-			return m, openAttachment(cm.Attachment.LocalPath, reveal)
+			return m, openAttachment(cm.Attachment.LocalPath, clickReveal(msg))
 		}
 		return m, nil
+	}
+	if msg.Type == tea.MouseRight {
+		return m, nil // right click only means "reveal attachment"
 	}
 	row := msg.Y - 1 // row 0 is the roster title
 	vis := m.visibleConvs()
@@ -862,7 +877,7 @@ func (m *model) View() string {
 		status = warnStyle.Render(status)
 	}
 	if m.hoverKey != "" {
-		status += dimStyle.Render(" · 点击打开，Ctrl+点击在文件管理器显示")
+		status += dimStyle.Render(" · 点击打开，Alt+点击/右键在文件管理器显示")
 	}
 	var footer strings.Builder
 	if suggestLines > 0 {
@@ -1035,7 +1050,7 @@ func (m *model) messageLines(limit int) string {
 			}
 			line := fmt.Sprintf("%s %s %s [%s %s]", ts, who, fileStyle.Render("文件"), name, humanSize(a.Size))
 			if a.LocalPath != "" {
-				suffix := " ↗点击打开·Ctrl+定位"
+				suffix := " ↗点击打开·Alt+定位"
 				if lipgloss.Width(line)+lipgloss.Width(suffix) <= m.rightWidth() {
 					line += dimStyle.Render(suffix)
 				}
