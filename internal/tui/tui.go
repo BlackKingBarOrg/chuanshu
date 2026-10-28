@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"chuanshu/internal/appcfg"
@@ -103,14 +104,27 @@ func Run(paths appcfg.Paths, openPeer string) error {
 	}
 	// Register our Hyprland window with the daemon so that
 	// `chuanshu open` (bar widget, notification) can focus us.
-	if addr := detectWindowAddress(); addr != "" {
-		var ok bool
-		_ = client.Call("register_window", map[string]any{"address": addr}, &ok)
-		defer func() {
+	// The window may not be mapped yet when we start, so retry
+	// for a while instead of giving up on the first attempt.
+	var regAddr atomic.Value // string, once detection succeeds
+	go func() {
+		for i := 0; i < 40; i++ {
+			if addr := detectWindowAddress(); addr != "" {
+				var ok bool
+				if err := client.Call("register_window", map[string]any{"address": addr}, &ok); err == nil {
+					regAddr.Store(addr)
+				}
+				return
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+	}()
+	defer func() {
+		if v := regAddr.Load(); v != nil {
 			var ok bool
-			_ = client.Call("unregister_window", map[string]any{"address": addr}, &ok)
-		}()
-	}
+			_ = client.Call("unregister_window", map[string]any{"address": v.(string)}, &ok)
+		}
+	}()
 	// All-motion (not just cell-motion): plain hover must reach us
 	// or attachment rows can never underline on hover.
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseAllMotion())
@@ -147,14 +161,22 @@ func detectWindowAddress() string {
 		return ""
 	}
 	var clients []struct {
-		Address string `json:"address"`
-		Pid     int    `json:"pid"`
+		Address      string `json:"address"`
+		Pid          int    `json:"pid"`
+		InitialTitle string `json:"initialTitle"`
 	}
 	if json.Unmarshal(out, &clients) != nil {
 		return ""
 	}
 	for _, c := range clients {
 		if ancestors[c.Pid] {
+			return c.Address
+		}
+	}
+	// Fallback: windows we launched carry the title "Chuanshu"
+	// (single-instance terminals can hide the ancestor relation).
+	for _, c := range clients {
+		if c.InitialTitle == "Chuanshu" {
 			return c.Address
 		}
 	}

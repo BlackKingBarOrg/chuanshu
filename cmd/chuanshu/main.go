@@ -276,7 +276,18 @@ func cmdOpen(paths appcfg.Paths, peer string) error {
 	var win struct {
 		Address string `json:"address"`
 	}
-	if err := client.Call("window", nil, &win); err == nil && win.Address != "" {
+	_ = client.Call("window", nil, &win)
+	if win.Address == "" {
+		// A TUI may be running without having registered (older
+		// build): adopt its window by title and register it now.
+		if addr := findChuanshuWindow(); addr != "" {
+			var ok bool
+			if err := client.Call("register_window", map[string]any{"address": addr}, &ok); err == nil {
+				win.Address = addr
+			}
+		}
+	}
+	if win.Address != "" {
 		if err := exec.Command("hyprctl", "dispatch", "focuswindow", "address:"+win.Address).Run(); err == nil {
 			if target != "" {
 				var out map[string]any
@@ -309,6 +320,29 @@ func cmdOpen(paths appcfg.Paths, peer string) error {
 	}
 	fmt.Println("已打开传书窗口")
 	return nil
+}
+
+// findChuanshuWindow locates a dedicated chuanshu terminal
+// window (title "Chuanshu") via hyprctl.
+func findChuanshuWindow() string {
+	out, err := exec.Command("hyprctl", "clients", "-j").Output()
+	if err != nil {
+		return ""
+	}
+	var clients []struct {
+		Address      string `json:"address"`
+		Title        string `json:"title"`
+		InitialTitle string `json:"initialTitle"`
+	}
+	if json.Unmarshal(out, &clients) != nil {
+		return ""
+	}
+	for _, c := range clients {
+		if c.InitialTitle == "Chuanshu" || c.Title == "Chuanshu" {
+			return c.Address
+		}
+	}
+	return ""
 }
 
 // cmdUnread prints the unread summary (for the bar widget: --json).
